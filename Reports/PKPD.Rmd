@@ -1,0 +1,74 @@
+---
+output:
+  bookdown::pdf_document2:
+    toc: false
+    number_sections: false
+documentclass: article
+geometry: margin=0.95in
+classoption:
+- twocolumn
+bibliography: pkpd.bib
+csl: vancouver.csl
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(kableExtra) # load for tables
+```
+
+# \textit{Pop-PKPD: Intro to Non-Linear Mixed Effect Models}
+
+Tom Stoughton, MS Candidate[^1]
+
+[^1]: Department of Biostatistics and Informatics, Colorado School of Public Health, University of Colorado Anschutz Medical Campus, Aurora, CO
+
+## Abstract
+
+PopPK-PD modeling utilizes non-linear mixed effects models to capture the behavior of complex dispersion and reaction metrics in relation to the dosage of drugs administered to the subject. In particular, this work seeks to model the exponential uptake and decay of the concentration of drugs in the human body along with the immediate effects of these drugs on vital signs like blood pressure over time within a population. This is achieved using widely available simulated data sets to prove the effectiveness of PopPK-PD models over standard linear mixed effect models.
+
+*Keywords: Non-linear mixed effects, PopPK-PD, concentration, blood pressure*
+
+## Introduction
+
+Pharmacokinetic (PK) models are frequently used to model how small molecules, typically pharmaceutical drugs, diffuse through the human body over time, while pharmacodynamic (PD) models measure the human body's responses to these drug infusions over time. Observing these effect within a population results in a longitudinal dataset which can be analyzed using these population-level (Pop) PK-PD models. This field of research motivated the development of nonlinear mixed-effect models (NLMM), which, much like their linear (LMM) counterparts, are used to model between-subject variation across a cohort and within-subject variation using repeated measures while allowing the regression function $f(\cdot|\vec\theta)$ to take any form [@bonate_nonlinear_2011-1]. One of the simplest non-linear models used in PopPK-PD is the IV Bolus model, which initially takes a maximum concentration that exponentially decays over time. This is like getting a shot; all of the drug is delivered "instantaneously", and then it gets distributed throughout the body over time. In order to estimate the rate of this exponential decay, several parameters are frequently estimated by the model, but rather than giving them generic $\beta_i$ labels, they are given informative names and symbols. The above described model can be written as:
+
+\begin{equation}
+  Y_{Bolus, i} \approx \frac{D}{V_{d, i}}\exp \bigg( -\frac{CL_i t}{V_{d, i}} \bigg)
+  (\#eq:bolus-model)
+\end{equation}
+
+where $Y_{Bolus, i}$ is the estimated concentration of the drug for subject $i$, $D$ is the *dose* of drug initially administered, $V_d$ is the *volume of distribution* which is a theoretical constant that "describes the drugs tendency to remain in the plasma or distribute into other tissue compartments" (unit volume, e.g. L or mL) [@bisht_clinical_2026], $CL$ is the *clearance* which is another constant that describes the efficiency of drug elimination (unit volume/time e.g. L/H or mL/min), and $t$ is the time since dose administration. By nature of including model parameters both inside and outside of the exponential function (in particular, $V_d$), this is a non-linear model, meaning that generalized linear mixed models are not sufficient to find estimates for these parameters. 
+
+Other models include more parameters and a more complex regression function $f(\cdot|\vec\theta)$ to approximate more complex behavior; this work models oral administration in addition to bolus, which presents a distinct drug uptake phase where the pill or liquid is digested before the exponential decay of dispersion throughout the body. This can be modeled with the following equation:
+
+\begin{equation}
+  Y_{Oral, i} \approx \frac{F \cdot D \cdot k_a}{V_{d, i} \cdot (k_a - k_{e,i})} \bigg( e^{-k_{e, i} t} - e^{-k_a t} \bigg)
+  (\#eq:oral-model)
+\end{equation}
+
+where $F$ is the *bioavailability*, $k_a$ is the *absorption rate*, and $k_{e,i} = \frac{CL_i}{V_{d, i}}$ is the elimination rate, the ratio of the clearance to the volume of distribution [@segall_compartmental_2024].
+
+## Methods
+
+i want to reference Equation \ref{eq:bolus-model}
+
+## Results
+
+## Conclusion
+
+\newpage
+\onecolumn
+
+## References
+
+\vspace{2mm}
+
+::: {#refs}
+:::
+
+## Code Appendix
+
+```{r, ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
+

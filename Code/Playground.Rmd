@@ -1,0 +1,334 @@
+---
+title: "Playground"
+output: html_document
+---
+
+```{r}
+library(nlme)
+library(lme4)
+library(deSolve)
+library(nlmeODE)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+library(pharmaverseadam)
+library(pharmaversesdtm)
+library(admiral)
+```
+
+
+```{r load-data}
+my_env <- new.env()
+
+load("../data/aht_trial1.rda", envir = my_env)
+load("../data/aht_trial2.rda", envir = my_env)
+load("../data/dapa_IV_oral.rda", envir = my_env)
+load("../data/pain_relief.rda", envir = my_env)
+load("../data/pain_score.rda", envir = my_env)
+load("../data/sd_iv_rich_pkpd.rda", envir = my_env)
+load("../data/sd_oral_richpk.rda", envir = my_env)
+
+loaded_names <- ls(my_env)
+print(loaded_names) 
+
+aht1 <- my_env[[loaded_names[1]]]   # Longitudinal two-arm PD data (SBP/DBP, biomarker + demographic covariates)
+aht2 <- my_env[[loaded_names[2]]]   # Summary data from above (Changes from baseline to last obs.)
+dapa <- my_env[[loaded_names[3]]]   # Crossover study, PK data (COBS)
+painR <- my_env[[loaded_names[4]]]  # Longitudinal multi-arm PKPD (COBS, Pain Score/Pain Relief, no covariates other than dose)
+painS <- my_env[[loaded_names[5]]]  # Summary data (NOT SAME AS ABOVE)
+ivPKPD <- my_env[[loaded_names[6]]] # Longitudinal PKPD (COBS, EOBS + Dose and Demographic Covariates)
+oralPK <- my_env[[loaded_names[7]]] # Longitudinal PK (conc, Dose and Demographic Covariates)
+
+
+data("pc", package = "pharmaversesdtm")
+data("ex", package = "pharmaversesdtm")
+data("adsl", package = "pharmaverseadam") # Analysis Subject Level
+
+
+pc <- pc %>% 
+  filter(PCSEQ < 13) %>%
+  group_by(USUBJID) %>%
+  # Keep only subjects who have at least one non-NA, non-zero concentration record
+  filter(any(!is.na(PCSTRESN) & PCSTRESN > 0)) %>%
+  ungroup()
+```
+
+```{r spaghetti-plots}
+ggplot(data = aht1, aes(x = TIME, y = SBP)) +
+  geom_line(aes(group = ID, color=TRT), alpha = 0.4, color = "gray") + 
+  # geom_point(alpha = 0.4, size = 1.5, color = "steelblue") + 
+  stat_summary(aes(color = TRT, group = TRT), fun=mean, geom="line") +
+  scale_color_manual(values = c("Placebo" = "firebrick", "AHT" = "navy")) +
+  theme_minimal() +
+  labs(
+    x = "Time",
+    y = "Systolic Blood Pressure (SBP)",
+    color = "Treatment Arm",
+    title = "Spaghetti Plot of SBP Over Time by Subject",
+    subtitle = "Mean Trajectories by Treatment (Placebo vs. AHT)"
+  )
+ggplot(data = aht1, aes(x = TIME, y = DBP)) +
+  geom_line(aes(group = ID, color=TRT), alpha = 0.4, color = "gray") + 
+  # geom_point(alpha = 0.4, size = 1.5, color = "steelblue") + 
+  stat_summary(aes(color = TRT, group = TRT), fun=mean, geom="line") +
+  scale_color_manual(values = c("Placebo" = "firebrick", "AHT" = "navy")) +
+  theme_minimal() +
+  labs(
+    x = "Time",
+    y = "Diastolic Blood Pressure (DBP)",
+    color = "Treatment Arm",
+    title = "Spaghetti Plot of DBP Over Time by Subject",
+    subtitle = "Mean Trajectories by Treatment (Placebo vs. AHT)"
+  )
+ggplot(data = dapa, aes(x = TAD, y = COBS)) +
+  geom_line(aes(group = interaction(ID, OCC)), alpha = 0.4, color = "gray") + 
+  # geom_point(alpha = 0.4, size = 1.5, color = "steelblue") + 
+  stat_summary(aes(group=OCC, color=as.factor(OCC)), fun=mean, geom="line", linewidth=1.2) +
+  scale_color_brewer(palette="Set2") +
+  theme_minimal() +
+  labs(
+    x = "Time After Dose",
+    y = "Concentration",
+    color = "Treatment Arm",
+    title = "Spaghetti Plot of Concentration Over Time by Subject",
+    subtitle = "Mean Trajectories by Treatment"
+  )
+ggplot(data = painR, aes(x = TIME, y = CONC)) +
+  geom_line(aes(group = ID, color=ARM), alpha = 0.4, color = "gray") + 
+  # geom_point(alpha = 0.4, size = 1.5, color = "steelblue") + 
+  stat_summary(aes(color = ARM, group = ARM), fun=mean, geom="line", linewidth=1.2) +
+  scale_color_brewer(palette="Set2") +
+  theme_minimal() +
+  labs(
+    x = "Time",
+    y = "Concentration",
+    color = "Treatment Arm",
+    title = "Spaghetti Plot of Drug Concentation Over Time by Subject",
+    subtitle = "Mean Trajectories by Treatment Dose"
+  )
+ggplot(data = painR, aes(x = TIME, y = PAINSCORE)) +
+  # geom_line(aes(group = ID, color=ARM), alpha = 0.4, color = "gray") + 
+  # geom_point(alpha = 0.4, size = 1.5, color = "steelblue") + 
+  stat_summary(aes(color = ARM, group = ARM), fun=mean, geom="line") +
+  scale_color_brewer(palette="Set2") +
+  theme_minimal() +
+  labs(
+    x = "Time",
+    y = "Pain Score",
+    color = "Treatment Arm",
+    title = "Spaghetti Plot of Pain Score Over Time by Subject",
+    subtitle = "Mean Trajectories by Treatment Dose"
+  )
+
+ggplot(data = ivPKPD %>% mutate(DOSE = as.factor(DOSE)), aes(x = TIME)) +
+  # 1. Individual subject lines (Spaghetti)
+  geom_line(aes(y = COBS, group = ID), alpha = 0.3, color = "firebrick") + 
+  geom_line(aes(y = EOBS, group = ID), alpha = 0.3, color = "steelblue") + 
+  
+  # 2. Mean trajectory for COBS by Treatment Arm (Solid line)
+  stat_summary(aes(y = COBS, color = DOSE, group = DOSE), 
+               fun = mean, geom = "line", linewidth = 1, linetype = "solid") +
+               
+  # 3. Mean trajectory for EOBS by Treatment Arm (Dashed line)
+  stat_summary(aes(y = EOBS, color = DOSE, group = DOSE), 
+               fun = mean, geom = "line", linewidth = 1, linetype = "dashed") +
+  
+  theme_minimal() +
+  labs(
+    x = "Time",
+    y = "Value / Score",
+    color = "Dose",
+    title = "Spaghetti Plot of COBS and EOBS Over Time by Subject",
+    subtitle = "Solid lines = COBS Mean | Dashed lines = EOBS Mean by Treatment Arm"
+  )
+
+ggplot(data = pc, aes(x = PCTPTNUM, y = PCSTRESN)) +
+  geom_line(aes(group = USUBJID), alpha = 0.4, color = "gray") + 
+  # geom_point(alpha = 0.4, size = 1.5, color = "steelblue") + 
+  stat_summary(fun=mean, geom="line", linewidth=1.2, color="steelblue") +
+  theme_minimal() +
+  labs(
+    x = "Time After Dose",
+    y = "Concentration",
+    title = "Spaghetti Plot of Concentration Over Time by Subject",
+    subtitle = "Mean Trajectories"
+  )
+
+```
+
+```{r aht-model}
+
+ahtLinSBP <- lme(SBP ~ as.factor(TIME)*TRT + AGE + WEIGHT + SCREATININE + SERUMALT + GENDER + RACE,
+                 random = ~(1 + TIME)|ID, data=aht1,
+                 control = lmeControl(maxIter = 200, msMaxIter = 200, opt = "optim"))
+
+
+# ahtLinSBP <- lmer(SBP ~ TIME*TRT + AGE + WEIGHT + SCREATININE + SERUMALT + GENDER + RACE + (1 + TIME|ID), data=aht1)
+
+# ahtNLSBP <- nlme(model = SBP ~ (1 / V) * exp(-((theta1 + theta2 * AGE) / V) * TIME),
+#   fixed = ka + F + theta1 + theta2 + V ~ 1,
+#   random = pdDiag(theta1 + theta2 + V ~ 1),
+#   groups = ~ ID,
+#   start = c(ka = 1.5, F = 0.8, theta1 = 1.2, theta2 = 0.01, V = 40.0),
+#   data = aht1
+# )
+
+summary(ahtLinSBP)
+AIC(ahtLinSBP)
+logLik(ahtLinSBP)
+
+aht1$PredSBP <- predict(ahtLinSBP)
+
+ggplot(data = aht1, aes(x = TIME, y = SBP)) +
+  geom_line(aes(group = ID, color=TRT), alpha = 0.4, color="gray") + 
+  # geom_point(alpha = 0.4, size = 1.5, color = "steelblue") + 
+  stat_summary(aes(color = TRT, group = TRT), fun=mean, geom="line") +
+  scale_color_manual(values = c("Placebo" = "firebrick", "AHT" = "navy")) +
+  theme_minimal() +
+  labs(
+    x = "Time",
+    y = "Systolic Blood Pressure (SBP)",
+    color = "Treatment Arm",
+    title = "Spaghetti Plot of SBP Over Time by Subject",
+    subtitle = "Mean Trajectories by Treatment (Placebo vs. AHT)"
+  )
+ggplot(data = aht1, aes(x = TIME, y = PredSBP)) +
+  geom_line(aes(group = ID, color=TRT), alpha = 0.4, color="gray") + 
+  # geom_point(alpha = 0.4, size = 1.5, color = "steelblue") + 
+  stat_summary(aes(color = TRT, group = TRT), fun=mean, geom="line") +
+  scale_color_manual(values = c("Placebo" = "firebrick", "AHT" = "navy")) +
+  theme_minimal() +
+  labs(
+    x = "Time",
+    y = "Predicted SBP",
+    color = "Treatment Arm",
+    title = "Spaghetti Plot of Predicted SBP Over Time by Subject",
+    subtitle = "Mean Trajectories by Treatment (Placebo vs. AHT)"
+  )
+
+```
+
+```{r}
+dapa$COBS_adj <- pmax(dapa$COBS, 1e-4)
+dapa <- dapa %>%
+  arrange(ID, OCC, TAD) %>% # Global chronological sort first
+  group_by(ID, OCC) %>%     # Group by subject and occasion
+  mutate(
+    # 1. Convert 0s to NA for both columns
+    AMT_IV_clean = na_if(AMT_IV, 0),
+    AMT_Oral_clean = na_if(AMT_ORAL, 0),
+    
+    # 2. Pick whichever route has the active dose at t = 0
+    D_raw = coalesce(AMT_IV_clean, AMT_Oral_clean)
+  ) %>%
+  # 3. Propagate that initial dose down to all subsequent TAD rows
+  fill(D_raw, .direction = "down") %>%
+  # 4. Finalize D (defaulting to 0 if neither route was given)
+  mutate(D = coalesce(D_raw, 0)) %>%
+  # 5. Clean up temporary working columns
+  select(-AMT_IV_clean, -AMT_Oral_clean, -D_raw) %>%
+  ungroup()
+
+dapa <- dapa %>% mutate(TADf = as.factor(TAD)) 
+```
+
+
+```{r dapa-models}
+# dapaLin <- lmer(log(COBS_adj) ~ TAD + I(TAD^2)*OCC + AGE + WEIGHT + GENDER + (1 + TAD + I(TAD^2)|ID), 
+#                 data=dapa)
+
+dapaLin <- lme(COBS_adj ~ TADf*OCC + AGE + WEIGHT + GENDER,
+               random = ~ (1 + TAD)|ID, data=dapa,
+               control = lmeControl(maxIter = 200, msMaxIter = 200, opt = "optim"))
+
+summary(dapaLin)
+AIC(dapaLin)
+
+dapa$predLin <- predict(dapaLin)
+# dapa$predLin <- pmin(dapa$predLin, 10000)
+
+# use NLMM from textbook for IV: Y = D/V exp{-(\theta_0 + \theta_1 Age_i)*t/V}
+# need more parameters for Oral (Absorption)
+dapaNL <- nlme(
+  model = COBS ~ ifelse(
+    FORMULATION == "IV",
+    (D / V) * exp(-(theta1 + theta2 * AGE) * TAD / V),
+    (F * D * ka / (V * (ka - (theta1 + theta2 * AGE) / V))) * 
+      (exp(-((theta1 + theta2 * AGE) / V) * TAD) - exp(-ka * TAD))
+  ),
+
+  fixed = ka + F + theta1 + theta2 + V ~ 1,
+  random = pdDiag(theta1 + theta2 + V ~ 1),
+  groups = ~ ID,
+  start = c(ka = 1.5, F = 0.8, theta1 = 1.2, theta2 = 0.01, V = 40.0),
+  data = dapa
+)
+
+summary(dapaNL)
+AIC(dapaNL)
+
+dapa$predNL <- predict(dapaNL)
+
+dapa$sqeLin <- (dapa$COBS_adj - dapa$predLin)^2
+dapa$sqeNL <- (dapa$COBS_adj - dapa$predNL)^2
+dapa$ss <- (dapa$COBS_adj - mean(dapa$COBS_adj))^2
+
+rmseLin <- sqrt(mean(dapa$sqeLin))
+rmseNL <- sqrt(mean(dapa$sqeNL))
+
+r2Lin <- 1 - sum(dapa$sqeLin)/sum(dapa$ss) 
+r2NL <- 1 - sum(dapa$sqeNL)/sum(dapa$ss) 
+
+data.frame(Linear.Model = c(RMSE = rmseLin, R.squared = r2Lin), 
+           NonLinear.Model = c(RMSE = rmseNL, R.squared = r2NL))
+
+
+ggplot(data = dapa, aes(x = TAD, y = COBS)) +
+  geom_line(aes(group = interaction(ID, OCC)), alpha = 0.4, color = "gray") + 
+  # geom_point(alpha = 0.4, size = 1.5, color = "steelblue") + 
+  stat_summary(aes(group=OCC, color=as.factor(OCC)), fun=mean, geom="line", linewidth=1.2) +
+  scale_color_brewer(palette="Set2") +
+  theme_minimal() +
+  labs(
+    x = "Time After Dose",
+    y = "Concentration",
+    color = "Treatment Arm",
+    title = "Spaghetti Plot of Concentration Over Time by Subject",
+    subtitle = "Mean Trajectories by Treatment"
+  )
+
+ggplot(data = dapa, aes(x = TAD, y = predLin)) +
+  geom_line(aes(group = interaction(ID, OCC)), alpha = 0.4, color = "gray") + 
+  # geom_point(alpha = 0.4, size = 1.5, color = "steelblue") + 
+  stat_summary(aes(group=OCC, color=as.factor(OCC)), fun=mean, geom="line", linewidth=1.2) +
+  scale_color_brewer(palette="Set2") +
+  theme_minimal() +
+  labs(
+    x = "Time After Dose",
+    y = "Predicted Concentration",
+    color = "Treatment Arm",
+    title = "Predicted Concentration Over Time by Subject",
+    subtitle = "Mean Trajectories by Treatment - Linear Model"
+  )
+
+ggplot(data = dapa, aes(x = TAD, y = predNL)) +
+  geom_line(aes(group = interaction(ID, OCC)), alpha = 0.4, color = "gray") + 
+  # geom_point(alpha = 0.4, size = 1.5, color = "steelblue") + 
+  stat_summary(aes(group=OCC, color=as.factor(OCC)), fun=mean, geom="line", linewidth=1.2) +
+  scale_color_brewer(palette="Set2") +
+  theme_minimal() +
+  labs(
+    x = "Time After Dose",
+    y = "Predicted Concentration",
+    color = "Treatment Arm",
+    title = "Predicted Concentration Over Time by Subject",
+    subtitle = "Mean Trajectories by Treatment - Non-Linear Model"
+  )
+
+```
+
+```{r}
+
+```
+
