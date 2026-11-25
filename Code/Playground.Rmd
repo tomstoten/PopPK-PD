@@ -6,8 +6,6 @@ output: html_document
 ```{r}
 library(nlme)
 library(lme4)
-library(deSolve)
-library(nlmeODE)
 library(ggplot2)
 library(dplyr)
 library(tidyr)
@@ -21,13 +19,13 @@ library(admiral)
 ```{r load-data}
 my_env <- new.env()
 
-load("../data/aht_trial1.rda", envir = my_env)
-load("../data/aht_trial2.rda", envir = my_env)
-load("../data/dapa_IV_oral.rda", envir = my_env)
-load("../data/pain_relief.rda", envir = my_env)
-load("../data/pain_score.rda", envir = my_env)
-load("../data/sd_iv_rich_pkpd.rda", envir = my_env)
-load("../data/sd_oral_richpk.rda", envir = my_env)
+load("../Data/aht_trial1.rda", envir = my_env)
+load("../Data/aht_trial2.rda", envir = my_env)
+load("../Data/dapa_IV_oral.rda", envir = my_env)
+load("../Data/pain_relief.rda", envir = my_env)
+load("../Data/pain_score.rda", envir = my_env)
+load("../Data/sd_iv_rich_pkpd.rda", envir = my_env)
+load("../Data/sd_oral_richpk.rda", envir = my_env)
 
 loaded_names <- ls(my_env)
 print(loaded_names) 
@@ -108,7 +106,7 @@ ggplot(data = painR, aes(x = TIME, y = CONC)) +
     subtitle = "Mean Trajectories by Treatment Dose"
   )
 ggplot(data = painR, aes(x = TIME, y = PAINSCORE)) +
-  # geom_line(aes(group = ID, color=ARM), alpha = 0.4, color = "gray") + 
+  # geom_line(aes(group = ID, color=ARM), alpha = 0.2, color = "gray") + 
   # geom_point(alpha = 0.4, size = 1.5, color = "steelblue") + 
   stat_summary(aes(color = ARM, group = ARM), fun=mean, geom="line") +
   scale_color_brewer(palette="Set2") +

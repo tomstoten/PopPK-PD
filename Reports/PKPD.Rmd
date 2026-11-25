@@ -12,9 +12,13 @@ csl: vancouver.csl
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = F)
 
 library(kableExtra) # load for tables
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(nlme)
 ```
 
 # \textit{Pop-PKPD: Intro to Non-Linear Mixed Effect Models}
@@ -31,31 +35,206 @@ PopPK-PD modeling utilizes non-linear mixed effects models to capture the behavi
 
 ## Introduction
 
-Pharmacokinetic (PK) models are frequently used to model how small molecules, typically pharmaceutical drugs, diffuse through the human body over time, while pharmacodynamic (PD) models measure the human body's responses to these drug infusions over time. Observing these effect within a population results in a longitudinal dataset which can be analyzed using these population-level (Pop) PK-PD models. This field of research motivated the development of nonlinear mixed-effect models (NLMM), which, much like their linear (LMM) counterparts, are used to model between-subject variation across a cohort and within-subject variation using repeated measures while allowing the regression function $f(\cdot|\vec\theta)$ to take any form [@bonate_nonlinear_2011-1]. One of the simplest non-linear models used in PopPK-PD is the IV Bolus model, which initially takes a maximum concentration that exponentially decays over time. This is like getting a shot; all of the drug is delivered "instantaneously", and then it gets distributed throughout the body over time. In order to estimate the rate of this exponential decay, several parameters are frequently estimated by the model, but rather than giving them generic $\beta_i$ labels, they are given informative names and symbols. The above described model can be written as:
+Pharmacokinetic (PK) models are frequently used to model how small molecules, typically pharmaceutical drugs, diffuse through the human body over time, while pharmacodynamic (PD) models measure the human body's responses to these drug infusions over time. Observing these effect within a population results in a longitudinal dataset which can be analyzed using these population-level (Pop) PK-PD models. This field of research motivated the development of nonlinear mixed-effect models (NLMM), which, much like their linear (LMM) counterparts, are used to model between-subject variation across a cohort and within-subject variation using repeated measures while allowing the regression function $f(\cdot|\vec\theta)$ to take any form [@bonate_nonlinear_2011-1]. One of the simplest non-linear models used in PopPK-PD is the IV Bolus model, which initially takes a maximum concentration that exponentially decays over time. This is like getting a shot; all of the drug is delivered "instantaneously", and then it gets distributed throughout the body over time. In order to estimate the rate of this exponential decay, several parameters are frequently estimated by the model, but rather than giving them generic $\beta_j$ labels, they are given informative names and symbols. The above described model can be written as:
 
 \begin{equation}
-  Y_{Bolus, i} \approx \frac{D}{V_{d, i}}\exp \bigg( -\frac{CL_i t}{V_{d, i}} \bigg)
+  Y_{Bolus} \approx \frac{D}{V_d}\exp \bigg( -\frac{CL}{V_d} t \bigg)
   (\#eq:bolus-model)
 \end{equation}
 
-where $Y_{Bolus, i}$ is the estimated concentration of the drug for subject $i$, $D$ is the *dose* of drug initially administered, $V_d$ is the *volume of distribution* which is a theoretical constant that "describes the drugs tendency to remain in the plasma or distribute into other tissue compartments" (unit volume, e.g. L or mL) [@bisht_clinical_2026], $CL$ is the *clearance* which is another constant that describes the efficiency of drug elimination (unit volume/time e.g. L/H or mL/min), and $t$ is the time since dose administration. By nature of including model parameters both inside and outside of the exponential function (in particular, $V_d$), this is a non-linear model, meaning that generalized linear mixed models are not sufficient to find estimates for these parameters. 
+where $Y_{Bolus}$ is the estimated concentration of the drug, $D$ is the *dose* of drug initially administered, $V_d$ is the *volume of distribution* which is a theoretical constant that "describes the drugs tendency to remain in the plasma or distribute into other tissue compartments" (unit volume, e.g. L or mL) [@bisht_clinical_2026], $CL$ is the *clearance* which is another constant that describes the efficiency of drug elimination (unit volume/time e.g. L/H or mL/min), and $t$ is the time since dose administration. By nature of including model parameters both inside and outside of the exponential function (in particular, $V_d$), this is a non-linear model, meaning that generalized linear mixed models are not sufficient to find estimates for these parameters. 
 
 Other models include more parameters and a more complex regression function $f(\cdot|\vec\theta)$ to approximate more complex behavior; this work models oral administration in addition to bolus, which presents a distinct drug uptake phase where the pill or liquid is digested before the exponential decay of dispersion throughout the body. This can be modeled with the following equation:
 
 \begin{equation}
-  Y_{Oral, i} \approx \frac{F \cdot D \cdot k_a}{V_{d, i} \cdot (k_a - k_{e,i})} \bigg( e^{-k_{e, i} t} - e^{-k_a t} \bigg)
+  Y_{Oral} \approx \frac{F \cdot D \cdot k_a}{V_d \cdot (k_a - k_e)} \bigg( e^{-k_e t} - e^{-k_a t} \bigg)
   (\#eq:oral-model)
 \end{equation}
 
-where $F$ is the *bioavailability*, $k_a$ is the *absorption rate*, and $k_{e,i} = \frac{CL_i}{V_{d, i}}$ is the elimination rate, the ratio of the clearance to the volume of distribution [@segall_compartmental_2024].
+where $F$ is the *bioavailability*, $k_a$ is the *absorption rate*, and $k_e = \frac{CL}{V_d}$ is the *elimination rate*, the ratio of the clearance to the volume of distribution [@segall_compartmental_2024].
+
+## Data
+
+```{r load-data, message=F}
+my_env = new.env()
+load("../Data/dapa_IV_oral.rda", envir = my_env)
+loaded_names <- ls(my_env)
+
+dapa <- my_env[[loaded_names[1]]]   # Crossover study, PK data (COBS)
+
+dapa$COBS_adj <- pmax(dapa$COBS, 1e-4)
+dapa <- dapa %>%
+  arrange(ID, OCC, TAD) %>% # Global chronological sort first
+  group_by(ID, OCC) %>%     # Group by subject and occasion
+  mutate(
+    # Convert 0s to NA for both columns
+    AMT_IV_clean = na_if(AMT_IV, 0),
+    AMT_Oral_clean = na_if(AMT_ORAL, 0),
+    
+    D_raw = coalesce(AMT_IV_clean, AMT_Oral_clean)
+  ) %>%
+  # Propagate that initial dose down to all subsequent TAD rows
+  fill(D_raw, .direction = "down") %>%
+  mutate(D = coalesce(D_raw, 0)) %>%
+  # Clean up temporary working columns
+  select(-AMT_IV_clean, -AMT_Oral_clean, -D_raw) %>%
+  ungroup()
+
+# Create new columns for modeling/labeling
+dapa <- dapa %>% mutate(
+  TADf = as.factor(TAD),
+  TREATMENT = paste0(FORMULATION, ": ", D, " ug"),
+  GENDER_NUM = as.numeric(GENDER)
+)
+```
+
+The data used in this work is a simulated version of the FDA's 2013 dapagliflozin study [@fda_dapagliflozin_clinpharm_2013] via Devin Pastoor's [GitHub](https://github.com/dpastoor/PKPDdatasets). This data contains columns for `COBS` - the observed concentration, `TAD` - time after dose, `AMT` - the dose of drug administered, and covariates for `AGE`, `WEIGHT`, and `GENDER`.
+
+```{r plot-data, fig.pos = "H", fig.align='center', fig.cap="Spaghetti Plot for Dapa Data"}
+ggplot(data = dapa, aes(x = TAD, y = COBS)) +
+  geom_line(aes(group = interaction(ID, TREATMENT)), alpha = 0.4, color = "gray") + 
+  # geom_point(alpha = 0.4, size = 1.5, color = "steelblue") + 
+  stat_summary(aes(group=TREATMENT, color=as.factor(TREATMENT)), fun=mean, geom="line", linewidth=1) +
+  scale_color_brewer(palette="Set2") +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom"
+  ) +
+  labs(
+    x = "Time After Dose (Hours)",
+    y = "Concentration (ug/L)",
+    color = "Treatment Arm",
+    title = "Drug Concentration Over Time by Subject",
+    subtitle = "Spaghetti Plot + Mean Trajectories by Treatment"
+  )
+
+```
+
+As can be seen in Figure \ref{fig:plot-data}, there were two different methods of administration: IV Bolus and Oral; 
+
+Due to computational instability, observed concentrations of 0 (seen at $t = 0$ for each subject) were buffered with an error term of 10E-4 to allow the non-linear solver to converge.
 
 ## Methods
 
-i want to reference Equation \ref{eq:bolus-model}
+### TODO
+
+- Try splines/transforms for linear model
+- Try PKPD joint model (look up what Matt was talking about with "cheating")
+- Include some interpretations of parameters, nothing comprehensive
+- Discuss peak behavior (find max/argmax for uptakes)
+
+The IV treatment arm demonstrates an initial peak concentration followed by an exponential decay, making Eq. \ref{eq:bolus-model} ideal to model these subjects, and the Oral treatment arm show clear uptake and decay patterns, meaning that Eq. \ref{eq:bolus-model} will be used for these subjects.
+
+To compare the efficacy of these NLMM to standard generalized LMM, both fixed effects and random effects are included into both model types. For the linear model, time is included as a factor for the fixed effect with an interaction on the treatment arm, and as continuous for a random slope component; covariates for age, weight, and gender were included as fixed effects. In the non-linear model, $V_d$ and $CL$ were included as random effects, with $CL_i$ itself modeled via the age, weight, 
+
+```{r run-models}
+dapaLin <- lme(COBS_adj ~ TADf*OCC + AGE + WEIGHT + GENDER,
+               random = ~ (1 + TAD)|ID, data=dapa,
+               method = "ML",
+               control = lmeControl(maxIter = 200, msMaxIter = 200, opt = "optim"))
+
+dapa$predLin <- predict(dapaLin)
+
+# use NLMM from textbook for IV
+# use model from sources for Oral 
+pkModelHelper <- function(FORMULATION, D, TAD, AGE, WEIGHT, GENDER, ka, F, 
+                          V, theta1, theta2, theta3, theta4){
+  CL <- theta1 + theta2 * AGE + theta3 * WEIGHT + theta4 * GENDER
+  ifelse(
+    FORMULATION == "IV",
+    (D / V) * exp(-CL * TAD / V),
+    (F * D * ka / (V * ka - CL)) * 
+      (exp(-CL * TAD / V) - exp(-ka * TAD))
+  )
+}
+dapaNL <- nlme(
+  model = COBS ~ pkModelHelper(FORMULATION, D, TAD, AGE, WEIGHT, GENDER_NUM, 
+                               ka, F, V, theta1, theta2, theta3, theta4),
+
+  fixed = ka + F + theta1 + theta2 + theta3 + theta4 + V ~ 1,
+  random = pdDiag(V ~ 1),
+  groups = ~ ID,
+  start = c(ka = 1, F = 0.8, theta1 = 1, theta2 = 0, theta3 = 0, theta4 = 0, V = 40),
+  data = dapa,
+  method = "ML",
+  control = nlmeControl(pnlsTol = 0.01, maxIter = 200, msMaxIter = 200)
+)
+
+```
+
+The `lme` and `nlme` package was used to find solutions for the linear and non-linear models respectively, using the maximum-likelihood method for consistency of likelihood-based metric comparisons.
 
 ## Results
 
+```{r compare-models, fig.pos = "H", fig.align='center', fig.cap="Model Comparison Metrics"}
+dapa$predNL <- predict(dapaNL)
+
+dapa$sqeLin <- (dapa$COBS_adj - dapa$predLin)^2
+dapa$sqeNL <- (dapa$COBS_adj - dapa$predNL)^2
+dapa$ss <- (dapa$COBS_adj - mean(dapa$COBS_adj))^2
+
+rmseLin <- sqrt(mean(dapa$sqeLin))
+rmseNL <- sqrt(mean(dapa$sqeNL))
+
+r2Lin <- 1 - sum(dapa$sqeLin)/sum(dapa$ss) 
+r2NL <- 1 - sum(dapa$sqeNL)/sum(dapa$ss) 
+
+comp_df <- data.frame(
+  Linear.Model = c(AIC = AIC(dapaLin), Log.Lik = logLik(dapaLin), RMSE = rmseLin, R.squared = r2Lin),
+  NonLinear.Model = c(AIC = AIC(dapaNL), Log.Lik = logLik(dapaNL), RMSE = rmseNL, R.squared = r2NL)
+)
+
+comp_df %>%
+  kbl(
+    digits = 3,
+    col.names = c("Linear Model", "Non-Linear Model"),
+    format.args = list(scientific = FALSE, nsmall = 3, big.mark = ","),
+    caption = "Model Comparison Metrics"
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    latex_options = c("striped", "hold_position"),
+    full_width = FALSE
+  )
+```
+
+```{r plot-predictions, fig.pos="H", fig.cap="BLUPs/EBEs for Linear and Non-linear models"}
+ggplot(data = dapa, aes(x = TAD, y = predLin)) +
+  geom_line(aes(group = interaction(ID, TREATMENT)), alpha = 0.4, color = "gray") + 
+  stat_summary(aes(group=TREATMENT, color=as.factor(TREATMENT)), fun=mean, geom="line", linewidth=1.2) +
+  scale_color_brewer(palette="Set2") +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom"
+  ) +
+  labs(
+    x = "Time After Dose (Hours)",
+    y = "Predicted Concentration (ug/L)",
+    color = "Treatment Arm",
+    title = "Predicted Concentration Over Time by Subject",
+    subtitle = "Linear Model (Time as Factor)"
+  )
+
+ggplot(data = dapa, aes(x = TAD, y = predNL)) +
+  geom_line(aes(group = interaction(ID, TREATMENT)), alpha = 0.4, color = "gray") + 
+  stat_summary(aes(group=TREATMENT, color=as.factor(TREATMENT)), fun=mean, geom="line", linewidth=1.2) +
+  scale_color_brewer(palette="Set2") +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom"
+  ) +
+  labs(
+    x = "Time After Dose (Hours)",
+    y = "Predicted Concentration (ug/L)",
+    color = "Treatment Arm",
+    title = "Predicted Concentration Over Time by Subject",
+    subtitle = "Non-Linear Model (Continuous Time)"
+  )
+```
+
 ## Conclusion
+
+Using non-linear mixed effects models proved to significantly improve both model fit and parsimony, supporting that biologically-motivated non-linear formulas provide significant improvements over more standard linear model assumptions for PopPK data.
 
 \newpage
 \onecolumn
